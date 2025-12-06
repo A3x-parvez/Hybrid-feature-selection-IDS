@@ -1,17 +1,7 @@
-numpy==2.3.2
-pandas==2.2.3
-matplotlib==3.10.1
-seaborn==0.13.2
-python-docx==1.2.0
+# Install TensorFlow with official CUDA support
+tensorflow[and-cuda]==2.19.0
 
-# Scikit-learn + dependencies
-scikit-learn==1.6.1
-scipy==1.13.1
-joblib==1.4.2
-threadpoolctl==3.6.0
-
-# TensorFlow GPU-supported (your version)
-tensorflow==2.19.0
+# TensorFlow compatible packages
 tensorboard==2.19.0
 tensorboard-data-server==0.7.2
 h5py==3.13.0
@@ -28,3 +18,16 @@ termcolor==2.5.0
 keras==3.10.0
 tf_keras==2.19.0
 namex==0.0.8
+
+# Core Python packages
+numpy==2.3.2
+pandas==2.2.3
+matplotlib==3.10.1
+seaborn==0.13.2
+python-docx==1.2.0
+
+# Scikit-learn + dependencies
+scikit-learn==1.6.1
+scipy==1.13.1
+joblib==1.4.2
+threadpoolctl==3.6.0
