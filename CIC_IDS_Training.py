@@ -521,7 +521,13 @@ def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, fea
         document.add_page_break()
     # ⭐ NEW: filename based on feature fusion method
 
-    filename = f"ALL_MODEL_RESULTS_{feature_method.upper()}.docx"
+    # filename = f"ALL_MODEL_RESULTS_{feature_method.upper()}.docx"
+    # Create output directory if not exists
+    output_dir = "model_results"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Build full file path
+    filename = os.path.join(output_dir, f"ALL_MODEL_RESULTS_{feature_method.upper()}.docx")
     document.save(filename)
 
     print(f"\n📄 ALL MODEL RESULTS SAVED SUCCESSFULLY AS: {filename}")
