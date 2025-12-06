@@ -1,0 +1,30 @@
+numpy==2.3.2
+pandas==2.2.3
+matplotlib==3.10.1
+seaborn==0.13.2
+python-docx==1.2.0
+
+# Scikit-learn + dependencies
+scikit-learn==1.6.1
+scipy==1.13.1
+joblib==1.4.2
+threadpoolctl==3.6.0
+
+# TensorFlow GPU-supported (your version)
+tensorflow==2.19.0
+tensorboard==2.19.0
+tensorboard-data-server==0.7.2
+h5py==3.13.0
+gast==0.6.0
+optree==0.14.1
+flatbuffers==25.2.10
+protobuf==5.29.4
+ml_dtypes==0.5.1
+google-pasta==0.2.0
+wrapt==1.17.2
+six==1.17.0
+absl-py==2.1.0
+termcolor==2.5.0
+keras==3.10.0
+tf_keras==2.19.0
+namex==0.0.8
