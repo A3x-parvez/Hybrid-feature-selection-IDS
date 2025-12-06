@@ -303,7 +303,7 @@ If this project helps you, please ⭐ star the repo!
 
 --- -->
 
----
+
 
 # 🙌 **Contributors & Community**
 
@@ -320,21 +320,4 @@ We welcome improvements, ideas, and future enhancements from the community.
 💼 *Model Architecture, Evaluation & Optimization*  
 🔗 **LinkedIn:** https://www.linkedin.com/in/rijwanool-karim/
 
----
-
-# ⭐ **Support the Project**
-
-If you found this repository helpful or inspiring,  
-please consider giving it a **⭐ star** — it motivates us to build more!
-
----
-
-# 📬 **Connect With Us**
-
-Have suggestions? Want to contribute?  
-Feel free to connect with any contributor via LinkedIn or open an issue on GitHub.
-
-Together, let’s build better and smarter Intrusion Detection Systems. 🚀
-
----
 
