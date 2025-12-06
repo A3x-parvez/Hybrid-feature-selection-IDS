@@ -74,10 +74,12 @@ The script:
 ```
 Hybrid-feature-selection-IDS/
 │
-├── train_ids.py                   # Main pipeline script
 ├── README.md                      # Documentation
-├── CIC-IDS-2017_fin_capped.csv    # Your dataset (not included)
-└── Outputs/
+├── requirements.txt               # Requirment files for the env
+├── CIC_IDS_Training.py            # Main pipeline script
+├── CIC_IDS_Training_gen.py        # Reformat pipeline script AI (NOT Tested)
+├── CIC-IDS-2017_fin_capped.csv    # Dataset
+└── model_results/
     ├── ALL_MODEL_RESULTS_PCA.docx
     ├── ALL_MODEL_RESULTS_ICA.docx
     └── ALL_MODEL_RESULTS_FA.docx
@@ -93,19 +95,102 @@ git clone https://github.com/A3x-parvez/Hybrid-feature-selection-IDS.git
 cd Hybrid-feature-selection-IDS
 ```
 
-### 2. Install dependencies
+## 🔧 **Environment Setup & Dependency Installation**
 
-```bash
-pip install -r requirment.txt
+This project was developed using:
+
+```
+Python 3.12.3
 ```
 
-GPU version:
+It is recommended to create an isolated virtual environment before installation.
+
+---
+
+### **1️⃣ Create Virtual Environment**
+
+#### **Windows**
+
+```bash
+python -m venv Hybrid_env
+```
+
+#### **Linux / macOS**
+
+```bash
+python3 -m venv Hybrid_env
+```
+
+---
+
+### **2️⃣ Activate the Environment**
+
+#### **Windows**
+
+```bash
+Hybrid_env\Scripts\activate
+```
+
+#### **Linux / macOS**
+
+```bash
+source Hybrid_env/bin/activate
+```
+
+---
+
+### **3️⃣ Install Dependencies**
+
+Install all required packages using:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### **⚡ (Optional) GPU Support**
+
+If your system supports CUDA and you want GPU acceleration:
 
 ```bash
 pip install tensorflow-gpu
 ```
 
+Verify GPU availability:
+
+```bash
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
+
 ---
+
+### **GLOBAL CONFIGURATION**
+
+The following configuration values are used as sensible defaults. Adjust them for quick tests or full production runs.
+
+```python
+# Which fusion methods to run
+FUSION_LIST = ['pca', 'ica', 'fa']
+
+# Models to evaluate (order doesn't matter)
+MODEL_LIST = ['LSTM', 'GRU', 'CNN', 'ANN']
+
+# Data split
+TEST_SIZE = 0.2            # Fraction of data reserved for testing
+RANDOM_STATE = 42
+
+# Training settings
+TRAINING_EPOCHS = 20        # Use a small value for quick tests; increase (e.g. 50+) for final runs
+BATCH_SIZE = 512
+
+# Feature-selection k upper limit
+# Use a small value for development/testing; set to 65 for full experiments
+RANGE_LIMIT = 65
+```
+
+---
+
 
 # ▶️ How to Run
 
@@ -186,9 +271,9 @@ All results stored in DOCX tables with performance summaries.
 
 * TensorFlow GPU memory growth
 * EarlyStopping support
-* Stratified splitting
-* Only one feature scoring computation per method
-* Efficient reshaping for DL models
+* Use stratified train–test splitting
+* Experiment with additional feature  fusion and selection techniques
+* Improve and optimize the model architectures
 
 ---
 
@@ -196,26 +281,32 @@ All results stored in DOCX tables with performance summaries.
 
 You can easily add:
 
-* XGBoost or LightGBM
-* More feature fusion methods
-* AutoML hyperparameter search
-* Saving trained model weights
-* Confusion matrices in reports
+* Additional feature fusion methods
+* Different feature selection techniques
+* AutoML-based hyperparameter search
+* Saving trained model weights for reuse
+* Confusion matrix and classification reports inside the Word output
+* Improved or alternative model architectures
+* Additional deep learning or machine learning models
 
 ---
 
-# 📜 License
+<!-- # 📜 License
 
 MIT License — free for research & commercial use.
 
----
+--- -->
 
-# ⭐ Support
+<!-- # ⭐ Support
 
 If this project helps you, please ⭐ star the repo!
 
----
+--- -->
 
 # 🙌 Contributions
 
-Pull requests and suggestions are welcome.
+<!-- Pull requests and suggestions are welcome. -->
+
+This project is a group effort in collaboration with [CGhosh81](https://github.com/CGhosh81).
+
+Contributors: `A3x-parvez`, `CGhosh81`
