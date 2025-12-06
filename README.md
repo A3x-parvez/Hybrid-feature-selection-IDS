@@ -303,10 +303,38 @@ If this project helps you, please ⭐ star the repo!
 
 --- -->
 
-# 🙌 Contributions
+---
 
-<!-- Pull requests and suggestions are welcome. -->
+# 🙌 **Contributors & Community**
 
-This project is a group effort in collaboration with [CGhosh81](https://github.com/CGhosh81).
+This project is a collaborative effort built with dedication and research.  
+We welcome improvements, ideas, and future enhancements from the community.
 
-Contributors: `A3x-parvez`, `CGhosh81`
+## 👥 **Core Contributors**
+
+### 🔹 **Chayan Ghosh**  
+💼 *Deep Learning & Feature Engineering*  
+🔗 **LinkedIn:** https://www.linkedin.com/in/chayan-ghosh07/
+
+### 🔹 **Md. Rijwanool Karim (Parvez)**  
+💼 *Model Architecture, Evaluation & Optimization*  
+🔗 **LinkedIn:** https://www.linkedin.com/in/rijwanool-karim/
+
+---
+
+# ⭐ **Support the Project**
+
+If you found this repository helpful or inspiring,  
+please consider giving it a **⭐ star** — it motivates us to build more!
+
+---
+
+# 📬 **Connect With Us**
+
+Have suggestions? Want to contribute?  
+Feel free to connect with any contributor via LinkedIn or open an issue on GitHub.
+
+Together, let’s build better and smarter Intrusion Detection Systems. 🚀
+
+---
+
