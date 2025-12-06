@@ -376,8 +376,8 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method, mi_sco
             model.add(Dropout(0.3))
             model.add(Dense(32, activation='relu'))
             model.add(Dense(1, activation='sigmoid'))
-            X_train_m = X_train.values.reshape((X_train.shape[0], X_train.shape[1], 1))
-            X_test_m  = X_test.values.reshape((X_test.shape[0], X_test.shape[1], 1))
+            X_train_m = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))
+            X_test_m  = X_test.values.reshape((X_test.shape[0], 1, X_test.shape[1]))
 
         elif model_name == "CNN":
             model = Sequential()
