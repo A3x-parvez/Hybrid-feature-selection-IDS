@@ -16,7 +16,7 @@ A single, unified Python script executes the full pipeline from preprocessing �
 
 # 📌 Key Features
 
-### ✅ Hybrid Feature Selection  
+### ✅ Hybrid Feature Selection  
 The system evaluates feature importance using MI, Chi2, and F-score, then fuses these using:
 - **PCA (Principal Component Analysis)**
 - **ICA (Independent Component Analysis)**
@@ -42,11 +42,11 @@ Each model is trained & tested using multiple feature subset sizes (`k = 5 → 6
 ### ✅ Automatic Word Report Generation
 For each feature fusion method, the system creates a `.docx` file with:
 
-- A table of all evaluated `k` values  
-- Train/Test accuracy  
-- Train/Test F1-score  
-- Selected features  
-- Best performing `k` for each model  
+- A table of all evaluated `k` values  
+- Train/Test accuracy  
+- Train/Test F1-score  
+- Selected features  
+- Best performing `k` for each model  
 
 Generated output files:
 
@@ -61,11 +61,11 @@ ALL_MODEL_RESULTS_FA.docx
 ### ✅ GPU-Optimized + Dimension Safe
 The script:
 
-- Auto-detects GPU  
-- Enables memory growth  
-- Handles datasets with any number of features  
-- Automatically adjusts invalid `k` values  
-- Auto-detects binary target column  
+- Auto-detects GPU  
+- Enables memory growth  
+- Handles datasets with any number of features  
+- Automatically adjusts invalid `k` values  
+- Auto-detects binary target column  
 
 ---
 
@@ -74,15 +74,15 @@ The script:
 ```
 Hybrid-feature-selection-IDS/
 │
-├── README.md                      # Documentation
-├── requirements.txt               # Requirment files for the env
-├── CIC_IDS_Training.py            # Main pipeline script
-├── CIC_IDS_Training_gen.py        # Reformat pipeline script AI (NOT Tested)
-├── CIC-IDS-2017_fin_capped.csv    # Dataset
+├── README.md                      # Documentation
+├── requirements.txt               # Requirment files for the env
+├── CIC_IDS_Training.py            # Main pipeline script
+├── CIC_IDS_Training_gen.py        # Reformat pipeline script AI (NOT Tested)
+├── CIC-IDS-2017_fin_capped.csv    # Dataset
 └── model_results/
-    ├── ALL_MODEL_RESULTS_PCA.docx
-    ├── ALL_MODEL_RESULTS_ICA.docx
-    └── ALL_MODEL_RESULTS_FA.docx
+    ├── ALL_MODEL_RESULTS_PCA.docx
+    ├── ALL_MODEL_RESULTS_ICA.docx
+    └── ALL_MODEL_RESULTS_FA.docx
 ```
 
 ---
@@ -177,11 +177,11 @@ FUSION_LIST = ['pca', 'ica', 'fa']
 MODEL_LIST = ['LSTM', 'GRU', 'CNN', 'ANN']
 
 # Data split
-TEST_SIZE = 0.2            # Fraction of data reserved for testing
+TEST_SIZE = 0.2            # Fraction of data reserved for testing
 RANDOM_STATE = 42
 
 # Training settings
-TRAINING_EPOCHS = 20        # Use a small value for quick tests; increase (e.g. 50+) for final runs
+TRAINING_EPOCHS = 20        # Use a small value for quick tests; increase (e.g. 50+) for final runs
 BATCH_SIZE = 512
 
 # Feature-selection k upper limit
@@ -272,7 +272,7 @@ All results stored in DOCX tables with performance summaries.
 * TensorFlow GPU memory growth
 * EarlyStopping support
 * Use stratified train–test splitting
-* Experiment with additional feature  fusion and selection techniques
+* Experiment with additional feature  fusion and selection techniques
 * Improve and optimize the model architectures
 
 ---
