@@ -1,25 +1,25 @@
 import os
 import sys
-import glob
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from docx import Document
-from docx.shared import Inches        # >>> NEW: for adding images to docx
+from docx.shared import Inches
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from sklearn.decomposition import FastICA
+
+from sklearn.decomposition import PCA, FastICA, FactorAnalysis
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.decomposition import FactorAnalysis
 from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import mutual_info_classif, chi2, f_classif
-from sklearn.metrics import f1_score, classification_report, confusion_matrix
+from sklearn.metrics import f1_score, confusion_matrix
 
 import tensorflow as tf
 import time
-import psutil                      # >>> NEW: for resource usage (memory)
+import psutil  # For resource usage
 
+# =========================
 # GLOBAL CONFIGURATION
+# =========================
 start_time = time.time()
 
 if len(sys.argv) < 2:
@@ -33,7 +33,6 @@ TRAING_EPOCHS = 50
 BATCH_SIZE = 512
 SPLIT_SIZE = 0.2
 RANGE_LIMIT = 75       # Upper limit for k in feature selection
-MI_SAMPLE_SIZE = 200000  # >>> NEW: sample size for feature scoring to avoid OOM
 
 data_path = sys.argv[1]
 
@@ -43,7 +42,9 @@ PLOT_DIR = "plots"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PLOT_DIR, exist_ok=True)
 
+# =========================
 # GPU SETUP
+# =========================
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -57,16 +58,22 @@ else:
 
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, GRU
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
 
-
+# =========================
+# DATA LOADING
+# =========================
 def load_data_from_directory(data_path):
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"❌ CSV file not found at path: {data_path}")
+    print(f"📄 Loading dataset from: {data_path}")
     df = pd.read_csv(data_path)
-    print("Dataset loaded sucessfully")
+    print("✅ Dataset loaded successfully")
     return df
 
-
+# =========================
+# SAFE PREPROCESSING
+# =========================
 def preprocess_data(df):
     print("🔍 Starting safe preprocessing...")
 
@@ -77,8 +84,12 @@ def preprocess_data(df):
     df.columns = df.columns.str.strip()
 
     # ---- AUTO-DETECT TARGET COLUMN ----
-    possible_targets = ["target", "Label", "label", "class", "Class", 
-                        "attack_cat", "Attack", "Attack_cat"]
+    possible_targets = [
+        "target", "Target",
+        "Label", "label",
+        "class", "Class",
+        "attack_cat", "Attack_cat", "Attack"
+    ]
 
     target_col = None
     for col in df.columns:
@@ -87,51 +98,65 @@ def preprocess_data(df):
             break
 
     if target_col is None:
-        raise KeyError(f"❌ ERROR: No target column found in dataset! Available columns: {df.columns.tolist()}")
+        raise KeyError(
+            f"❌ ERROR: No target column found in dataset! "
+            f"Available columns: {df.columns.tolist()}"
+        )
 
     # Normalize target column name
     if target_col != "target":
+        print(f"ℹ️ Using '{target_col}' as target. Renaming to 'target'.")
         df.rename(columns={target_col: "target"}, inplace=True)
 
-    # ---- Convert all object columns to numeric safely ----
+    # Convert non-target object columns to numeric safely
     for col in df.columns:
+        if col == "target":
+            continue
         if df[col].dtype == "object":
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # ---- Replace infinite values ----
+    # Replace infinite values
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-    # ---- Fill NaN using median (safer than dropna) ----
+    # Fill NaN using column median
     df.fillna(df.median(numeric_only=True), inplace=True)
+
+    # Ensure target has no NaN
+    if df["target"].isna().any():
+        df = df[~df["target"].isna()]
+
+    # Try to make target integer (0/1)
+    try:
+        df["target"] = df["target"].astype(int)
+    except Exception:
+        df["target"], _ = pd.factorize(df["target"])
 
     print(f"✅ After cleaning: {df.shape}")
 
-    # ---- Split features & labels ----
     X_fin_capped = df.drop(columns=["target"])
     y_encoded = df["target"]
 
     print("Class distribution:")
     print(y_encoded.value_counts())
-
-    print("Preprocessing done.")
+    print("Preprocessing done.\n")
     return X_fin_capped, y_encoded
 
-
-
+# =========================
+# TRAIN/TEST SPLIT FOR SELECTED FEATURES
+# =========================
 def split_sub_data(X_fin_capped, y_encoded, selected, test_size=0.2, random_state=42):
     print("Selected Features:", selected)
-    print("New data created .")
+    print("Creating new data with selected features...")
 
     X_selected = X_fin_capped[selected]
-    print("Feature selection done.")
-
+    print("Feature selection applied.")
     print("Original shape:", X_fin_capped.shape)
     print("Selected shape:", X_selected.shape)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X_selected, y_encoded, test_size=test_size, random_state=random_state
     )
-    print("Train test split done.")
+    print("Train-test split done.")
 
     y_train = np.array(y_train)
     y_test = np.array(y_test)
@@ -156,29 +181,46 @@ def split_sub_data(X_fin_capped, y_encoded, selected, test_size=0.2, random_stat
 
     return X_train, X_test, y_train, y_test
 
-
+# =========================
+# FEATURE SCORES (MI, CHI², F)
+# =========================
 def calculate_Score(X, y):
-    print("calculated mi score.")
-    mi_scores = mutual_info_classif(X, y, random_state=42)
-    print("Sucessfully calculated mi score.")
+    print("📊 Calculating feature scores (MI, Chi², F)...")
 
-    print("calculated chi score.")
+    # Mutual Information
+    print("→ Calculating MI score...")
+    mi_scores = mutual_info_classif(X, y, random_state=42)
+    print("✅ MI score calculated.")
+
+    # Chi-square (requires non-negative)
+    print("→ Calculating Chi² score...")
     X_chi = X.copy()
     X_chi[X_chi < 0] = 0
     chi_scores, _ = chi2(X_chi, y)
-    print("Sucessfully calculated chi score.")
+    print("✅ Chi² score calculated.")
 
-    print("calculated f score.")
+    # ANOVA F-score
+    print("→ Calculating F score...")
     f_scores, _ = f_classif(X, y)
-    print("Sucessfully calculated f score.")
+    print("✅ F score calculated.")
 
+    # Clean scores: handle NaN / Inf everywhere
+    mi_scores = np.nan_to_num(mi_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    chi_scores = np.nan_to_num(chi_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    f_scores = np.nan_to_num(f_scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    print("✅ All scores cleaned of NaN/Inf.\n")
     return mi_scores, chi_scores, f_scores
 
-
+# =========================
+# HYBRID FEATURE SELECTION: PCA
+# =========================
 def hybrid_feature_selection_pca(mi_scores, chi_scores, f_scores, feature_names, k):
     print("Starting PCA-based feature fusion...")
 
     scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    # Clean any remaining NaN / Inf
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
 
     scaler = MinMaxScaler()
     scores_scaled = scaler.fit_transform(scores)
@@ -199,15 +241,18 @@ def hybrid_feature_selection_pca(mi_scores, chi_scores, f_scores, feature_names,
     print("✅ PCA fusion completed.")
     print("Top", k, "Selected Features:", selected_features)
     print("\nPCA Component Weights (importance of MI, Chi², F):")
-    print(pd.Series(pca.components_[0], index=['MI', 'Chi2', 'F']))
+    print(pd.Series(pca.components_[0], index=['MI', 'Chi2', 'F']), "\n")
 
     return selected_features, feature_df
 
-
+# =========================
+# HYBRID FEATURE SELECTION: ICA
+# =========================
 def hybrid_feature_selection_ica(mi_scores, chi_scores, f_scores, feature_names, k):
     print("Starting ICA-based feature fusion...")
 
     scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
 
     scaler = MinMaxScaler()
     scores_scaled = scaler.fit_transform(scores)
@@ -219,7 +264,7 @@ def hybrid_feature_selection_ica(mi_scores, chi_scores, f_scores, feature_names,
     correlation = np.corrcoef(meta_score, simple_average)[0, 1]
 
     if correlation < 0:
-        print("🔄 ICA sign flip detected. Inverting scores to match reality...")
+        print("🔄 ICA sign flip detected. Inverting scores...")
         meta_score = -meta_score
 
     feature_df = pd.DataFrame({
@@ -233,15 +278,18 @@ def hybrid_feature_selection_ica(mi_scores, chi_scores, f_scores, feature_names,
     selected_features = feature_df.head(k)['Feature'].tolist()
 
     print("✅ ICA fusion completed.")
-    print(f"Top {k} Selected Features: {selected_features}")
+    print(f"Top {k} Selected Features: {selected_features}\n")
 
     return selected_features, feature_df
 
-
+# =========================
+# HYBRID FEATURE SELECTION: FA
+# =========================
 def hybrid_feature_selection_fa(mi_scores, chi_scores, f_scores, feature_names, k):
     print("Starting Factor Analysis (FA) feature fusion...")
 
     scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
 
     scaler = MinMaxScaler()
     scores_scaled = scaler.fit_transform(scores)
@@ -261,13 +309,14 @@ def hybrid_feature_selection_fa(mi_scores, chi_scores, f_scores, feature_names, 
 
     print("✅ FA fusion completed.")
     print(f"Top {k} Selected Features: {selected_features}")
-
     print("\nFactor Loadings (Correlation with MI, Chi2, F):")
-    print(pd.Series(fa.components_[0], index=['MI', 'Chi2', 'F']))
+    print(pd.Series(fa.components_[0], index=['MI', 'Chi2', 'F']), "\n")
 
     return selected_features, feature_df
 
-
+# =========================
+# WRAPPER: FEATURE SELECTION
+# =========================
 def feature_selection(X_fin_capped, mi_scores, chi_scores, f_scores, k=20, method='pca'):
     if method == 'pca':
         selected_features, score_table = hybrid_feature_selection_pca(
@@ -289,17 +338,16 @@ def feature_selection(X_fin_capped, mi_scores, chi_scores, f_scores, k=20, metho
 
     return selected_features, score_table
 
-
-# ===========================================
-#  MODULE: UNIVERSAL TRAINING PIPELINE
-# ===========================================
+# =========================
+# UNIVERSAL TRAINING PIPELINE FOR A SINGLE MODEL
+# =========================
 def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
                      mi_scores, chi_scores, f_scores):
 
     results = []
     print(f"\n============== {model_name} TRAINING STARTED ({feature_method}) ==============")
 
-    process = psutil.Process(os.getpid())  # >>> NEW: track memory
+    process = psutil.Process(os.getpid())
     best_test_f1 = -1
     best_cm = None
     best_k_for_cm = None
@@ -307,9 +355,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
     for k in range(5, RANGE_LIMIT + 1, 5):
 
         print(f"\n===== Testing k = {k} =====")
-        print("Feature selection start:")
+        print("Feature selection start...")
 
-        k_start_time = time.time()  # >>> NEW: timing per k
+        k_start_time = time.time()
 
         selected, value_table = feature_selection(
             X_fin_capped=X_fin_capped,
@@ -328,6 +376,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
             random_state=RANDOM_STATE
         )
 
+        # ---------------------------
+        # BUILD MODEL
+        # ---------------------------
         if model_name == "LSTM":
             model = Sequential()
             model.add(LSTM(128, input_shape=(1, X_train.shape[1]), return_sequences=True))
@@ -402,6 +453,12 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
             X_train_m = X_train.values.reshape((X_train.shape[0], X_train.shape[1], 1))
             X_test_m = X_test.values.reshape((X_test.shape[0], X_test.shape[1], 1))
 
+        else:
+            raise ValueError(f"Unknown model name: {model_name}")
+
+        # ---------------------------
+        # COMPILE & TRAIN
+        # ---------------------------
         model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
         tf.debugging.set_log_device_placement(True)
@@ -425,6 +482,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
         )
         print("Training done.")
 
+        # ---------------------------
+        # EVALUATION
+        # ---------------------------
         train_loss, train_acc = model.evaluate(X_train_m, y_train, verbose=0)
         test_loss, test_acc = model.evaluate(X_test_m, y_test, verbose=0)
 
@@ -434,8 +494,8 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
         train_f1 = f1_score(y_train, y_train_pred)
         test_f1 = f1_score(y_test, y_test_pred)
 
-        k_time = time.time() - k_start_time           # >>> NEW: time per k
-        mem_gb = process.memory_info().rss / (1024**3)  # >>> NEW: memory in GB
+        k_time = time.time() - k_start_time
+        mem_gb = process.memory_info().rss / (1024 ** 3)
 
         results.append({
             "k": k,
@@ -451,7 +511,6 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
         print(f"Train F1  = {train_f1:.4f}, Test F1  = {test_f1:.4f}")
         print(f"Time for k={k}: {k_time:.2f} sec, Memory: {mem_gb:.2f} GB")
 
-        # Track best confusion matrix for this model + feature method
         if test_f1 > best_test_f1:
             best_test_f1 = test_f1
             best_cm = confusion_matrix(y_test, y_test_pred)
@@ -461,7 +520,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
     best_row = results_df.loc[results_df['test_f1'].idxmax()]
     print(f"\n{model_name} ({feature_method}) : 🏆 Best k = {best_row['k']} | Test F1 = {best_row['test_f1']:.4f}")
 
-    # >>> NEW: Save per-model F1 vs k plot
+    # ---------------------------
+    # PLOTS: F1 vs k
+    # ---------------------------
     plt.figure()
     plt.plot(results_df['k'], results_df['train_f1'], marker='o', label='Train F1')
     plt.plot(results_df['k'], results_df['test_f1'], marker='o', label='Test F1')
@@ -474,7 +535,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
     plt.savefig(f1_plot_path, bbox_inches='tight')
     plt.close()
 
-    # >>> NEW: Save per-model time vs k plot (resource usage)
+    # ---------------------------
+    # PLOTS: Time vs k
+    # ---------------------------
     plt.figure()
     plt.plot(results_df['k'], results_df['time_sec'], marker='o')
     plt.xlabel("Number of Features (k)")
@@ -485,7 +548,9 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
     plt.savefig(time_plot_path, bbox_inches='tight')
     plt.close()
 
-    # >>> NEW: Save confusion matrix heatmap for best k
+    # ---------------------------
+    # PLOTS: Confusion Matrix (best k)
+    # ---------------------------
     if best_cm is not None:
         plt.figure()
         sns.heatmap(best_cm, annot=True, fmt='d', cmap='Blues')
@@ -496,32 +561,30 @@ def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
         plt.savefig(cm_plot_path, bbox_inches='tight')
         plt.close()
 
-    # Also save raw CSV of results
+    # Save raw CSV results
     csv_path = os.path.join(OUTPUT_DIR, f"{feature_method}_{model_name}_results.csv")
     results_df.to_csv(csv_path, index=False)
 
     return results_df, best_row
 
-
-# ===========================================
-#  MASTER FUNCTION TO RUN ALL MODELS
-# ===========================================
+# =========================
+# RUN ALL MODELS FOR ONE FEATURE FUSION METHOD
+# =========================
 def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, feature_method="pca"):
 
-    fm_start_time = time.time()  # >>> NEW: time per feature fusion
+    fm_start_time = time.time()
 
     print(f"\n########## RUNNING ALL MODELS WITH {feature_method.upper()} FEATURE FUSION ##########")
 
     document = Document()
     document.add_heading(f"{feature_method.upper()} FULL MODEL RESULTS", level=1)
 
-    # >>> NEW: Configuration + basic info in DOCX
     document.add_paragraph(f"Dataset shape: {X_fin_capped.shape[0]} rows, {X_fin_capped.shape[1]} features")
     document.add_paragraph(f"Train/Test split: {SPLIT_SIZE}, Random state: {RANDOM_STATE}")
     document.add_paragraph(f"Epochs: {TRAING_EPOCHS}, Batch size: {BATCH_SIZE}")
     document.add_paragraph(f"Feature fusion method: {feature_method.upper()}")
 
-    model_results_dict = {}  # >>> NEW: store dfs for overall plot
+    model_results_dict = {}
 
     models = ["LSTM", "ANN", "GRU", "CNN"]
 
@@ -541,7 +604,6 @@ def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, fea
 
         document.add_heading(f"{model} Results", level=2)
 
-        # Create table with header row
         table = document.add_table(rows=1, cols=len(df.columns))
         table.style = 'Light List Accent 1'
 
@@ -552,14 +614,12 @@ def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, fea
         for _, row in df.iterrows():
             row_cells = table.add_row().cells
             for i, col in enumerate(df.columns):
-                value = row[col]
-                row_cells[i].text = str(value)
+                row_cells[i].text = str(row[col])
 
         document.add_paragraph(
             f"\n🏆 Best k = {best['k']} | Test F1 = {best['test_f1']:.4f}"
         )
 
-        # >>> NEW: Add plots into DOCX if exist
         f1_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_F1_vs_k.png")
         time_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_Time_vs_k.png")
         cm_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_Confusion_Matrix.png")
@@ -578,7 +638,7 @@ def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, fea
 
         document.add_page_break()
 
-    # >>> NEW: Overall comparison plot (all models, same feature method)
+    # Overall comparison: all models, same feature fusion
     plt.figure()
     for model, df in model_results_dict.items():
         plt.plot(df['k'], df['test_f1'], marker='o', label=model)
@@ -603,17 +663,19 @@ def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores, fea
     document.save(filename)
 
     print(f"\n📄 ALL MODEL RESULTS SAVED SUCCESSFULLY AS: {filename}")
-    print(f"⏱ Time for {feature_method.upper()} fusion: {total_min:.2f} minutes")
+    print(f"⏱ Time for {feature_method.upper()} fusion: {total_min:.2f} minutes\n")
 
-
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     print("Data path received:", data_path)
     df = load_data_from_directory(data_path)
 
     X_fin_capped, y_encoded = preprocess_data(df)
 
-    # >>> HPC MODE — ALWAYS USE FULL DATA
-    print("HPC DETECTED: Using FULL dataset for MI / Chi² / F-score calculations.")
+    # HPC MODE — use FULL DATA for scoring
+    print("HPC MODE: Using FULL dataset for MI / Chi² / F-score calculations.")
     X_score, y_score = X_fin_capped, y_encoded
 
     mi_scores, chi_scores, f_scores = calculate_Score(X_score, y_score)
