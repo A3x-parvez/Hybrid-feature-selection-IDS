@@ -1,0 +1,818 @@
+import os
+import sys
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from docx import Document
+from docx.shared import Inches
+import matplotlib.pyplot as plt
+
+from sklearn.decomposition import PCA, FastICA, FactorAnalysis
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.feature_selection import mutual_info_classif, chi2, f_classif
+from sklearn.metrics import f1_score, confusion_matrix
+
+import tensorflow as tf
+import time
+import psutil
+import subprocess
+import platform
+
+# =========================
+# GLOBAL CONFIGURATION
+# =========================
+start_time = time.time()
+
+if len(sys.argv) < 2:
+    print("Usage: python CIC_IDS_Training.py <data_path>")
+    sys.exit(1)
+
+FUSION_LIST = ['pca', 'ica', 'fa']
+MODEL_LIST = ['LSTM', 'ANN', 'GRU', 'CNN']
+RANDOM_STATE = 42
+TRAING_EPOCHS = 50
+BATCH_SIZE = 512
+SPLIT_SIZE = 0.2
+RANGE_LIMIT = 65  # Upper limit for k in feature selection
+
+data_path = sys.argv[1]
+
+# Folders for results
+OUTPUT_DIR = "model_results"
+PLOT_DIR = "plots"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
+
+# =========================
+# GPU SETUP
+# =========================
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("✅ Memory growth enabled on GPU.")
+    except RuntimeError as e:
+        print("⚠️ Could not set memory growth:", e)
+else:
+    print("⚠️ No GPU found. Running on CPU.")
+
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, GRU
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+
+
+# =========================
+# SYSTEM / GPU INFO HELPERS
+# =========================
+def get_gpu_memory_used_gb():
+    """Return max used GPU memory (GB) using nvidia-smi, or 0.0 if not available."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=True
+        )
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        if not lines:
+            return 0.0
+        vals = [float(x) for x in lines]
+        return max(vals) / 1024.0  # MiB -> GiB
+    except Exception:
+        return 0.0
+
+
+def get_system_info():
+    """Collect basic system info for logging & DOCX."""
+    # CPU model
+    cpu_model = ""
+    try:
+        cpu_model = platform.processor()
+        if not cpu_model:
+            out = subprocess.check_output(
+                "lscpu | grep 'Model name'", shell=True, text=True
+            )
+            cpu_model = out.split(":", 1)[1].strip()
+    except Exception:
+        cpu_model = "Unknown CPU"
+
+    # Total RAM
+    total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+
+    # GPU name
+    gpu_name = ""
+    try:
+        out = subprocess.check_output(
+            "nvidia-smi --query-gpu=gpu_name --format=csv,noheader",
+            shell=True,
+            text=True
+        )
+        names = {line.strip() for line in out.splitlines() if line.strip()}
+        gpu_name = ", ".join(sorted(names))
+    except Exception:
+        gpu_name = "No GPU or nvidia-smi unavailable"
+
+    return {
+        "cpu_model": cpu_model,
+        "total_ram_gb": total_ram_gb,
+        "gpu_name": gpu_name
+    }
+
+
+# =========================
+# DATA LOADING
+# =========================
+def load_data_from_directory(data_path):
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"❌ CSV file not found at path: {data_path}")
+    print(f"📄 Loading dataset from: {data_path}")
+    df = pd.read_csv(data_path)
+    print("✅ Dataset loaded successfully")
+    return df
+
+
+# =========================
+# SAFE PREPROCESSING
+# =========================
+def preprocess_data(df):
+    print("🔍 Starting safe preprocessing...")
+
+    # Remove unnamed index columns
+    df = df.loc[:, ~df.columns.str.contains("unnamed", case=False)]
+
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
+    # Auto-detect target column
+    possible_targets = [
+        "target", "Target",
+        "Label", "label",
+        "class", "Class",
+        "attack_cat", "Attack_cat", "Attack"
+    ]
+
+    target_col = None
+    for col in df.columns:
+        if col.strip() in possible_targets:
+            target_col = col
+            break
+
+    if target_col is None:
+        raise KeyError(
+            f"❌ ERROR: No target column found in dataset! "
+            f"Available columns: {df.columns.tolist()}"
+        )
+
+    # Normalize target column name
+    if target_col != "target":
+        print(f"ℹ️ Using '{target_col}' as target. Renaming to 'target'.")
+        df.rename(columns={target_col: "target"}, inplace=True)
+
+    # Convert non-target object columns to numeric safely
+    for col in df.columns:
+        if col == "target":
+            continue
+        if df[col].dtype == "object":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Replace infinite values
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # Fill NaN using column median
+    df.fillna(df.median(numeric_only=True), inplace=True)
+
+    # Ensure target has no NaN
+    if df["target"].isna().any():
+        df = df[~df["target"].isna()]
+
+    # Try to make target integer (0/1)
+    try:
+        df["target"] = df["target"].astype(int)
+    except Exception:
+        df["target"], _ = pd.factorize(df["target"])
+
+    print(f"✅ After cleaning: {df.shape}")
+
+    X_fin_capped = df.drop(columns=["target"])
+    y_encoded = df["target"]
+
+    print("Class distribution:")
+    print(y_encoded.value_counts())
+    print("Preprocessing done.\n")
+    return X_fin_capped, y_encoded
+
+
+# =========================
+# TRAIN/TEST SPLIT FOR SELECTED FEATURES
+# =========================
+def split_sub_data(X_fin_capped, y_encoded, selected, test_size=0.2, random_state=42):
+    print("Selected Features:", selected)
+    print("Creating new data with selected features...")
+
+    X_selected = X_fin_capped[selected]
+    print("Feature selection applied.")
+    print("Original shape:", X_fin_capped.shape)
+    print("Selected shape:", X_selected.shape)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_selected, y_encoded, test_size=test_size, random_state=random_state
+    )
+    print("Train-test split done.")
+
+    y_train = np.array(y_train)
+    y_test = np.array(y_test)
+
+    train_total = len(y_train)
+    train_class0 = np.sum(y_train == 0)
+    train_class1 = np.sum(y_train == 1)
+
+    test_total = len(y_test)
+    test_class0 = np.sum(y_test == 0)
+    test_class1 = np.sum(y_test == 1)
+
+    print("\n====== Class Distribution After Split ======")
+    print(f"Training Total  : {train_total}")
+    print(f"Training Class 0: {train_class0}")
+    print(f"Training Class 1: {train_class1}")
+    print("-------------------------------------------")
+    print(f"Testing Total   : {test_total}")
+    print(f"Testing Class 0 : {test_class0}")
+    print(f"Testing Class 1 : {test_class1}")
+    print("===========================================\n")
+
+    return X_train, X_test, y_train, y_test
+
+
+# =========================
+# FEATURE SCORES (MI, CHI², F)
+# =========================
+def calculate_Score(X, y):
+    print("📊 Calculating feature scores (MI, Chi², F)...")
+
+    # Mutual Information
+    print("→ Calculating MI score...")
+    mi_scores = mutual_info_classif(X, y, random_state=42)
+    print("✅ MI score calculated.")
+
+    # Chi-square (requires non-negative)
+    print("→ Calculating Chi² score...")
+    X_chi = X.copy()
+    X_chi[X_chi < 0] = 0
+    chi_scores, _ = chi2(X_chi, y)
+    print("✅ Chi² score calculated.")
+
+    # ANOVA F-score
+    print("→ Calculating F score...")
+    f_scores, _ = f_classif(X, y)
+    print("✅ F score calculated.")
+
+    # Clean scores: handle NaN / Inf everywhere
+    mi_scores = np.nan_to_num(mi_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    chi_scores = np.nan_to_num(chi_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    f_scores = np.nan_to_num(f_scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    print("✅ All scores cleaned of NaN/Inf.\n")
+    return mi_scores, chi_scores, f_scores
+
+
+# =========================
+# HYBRID FEATURE SELECTION: PCA
+# =========================
+def hybrid_feature_selection_pca(mi_scores, chi_scores, f_scores, feature_names, k):
+    print("Starting PCA-based feature fusion...")
+
+    scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    scaler = MinMaxScaler()
+    scores_scaled = scaler.fit_transform(scores)
+
+    pca = PCA(n_components=1)
+    meta_score = pca.fit_transform(scores_scaled).ravel()
+
+    feature_df = pd.DataFrame({
+        'Feature': feature_names,
+        'MI_Score': mi_scores,
+        'Chi2_Score': chi_scores,
+        'F_Score': f_scores,
+        'Meta_Score': meta_score
+    }).sort_values(by='Meta_Score', ascending=False)
+
+    selected_features = feature_df.head(k)['Feature'].tolist()
+
+    print("✅ PCA fusion completed.")
+    print("Top", k, "Selected Features:", selected_features)
+    print("\nPCA Component Weights (importance of MI, Chi², F):")
+    print(pd.Series(pca.components_[0], index=['MI', 'Chi2', 'F']), "\n")
+
+    return selected_features, feature_df
+
+
+# =========================
+# HYBRID FEATURE SELECTION: ICA
+# =========================
+def hybrid_feature_selection_ica(mi_scores, chi_scores, f_scores, feature_names, k):
+    print("Starting ICA-based feature fusion...")
+
+    scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    scaler = MinMaxScaler()
+    scores_scaled = scaler.fit_transform(scores)
+
+    ica = FastICA(n_components=1, random_state=42, whiten='unit-variance')
+    meta_score = ica.fit_transform(scores_scaled).ravel()
+
+    simple_average = np.mean(scores_scaled, axis=1)
+    correlation = np.corrcoef(meta_score, simple_average)[0, 1]
+
+    if correlation < 0:
+        print("🔄 ICA sign flip detected. Inverting scores...")
+        meta_score = -meta_score
+
+    feature_df = pd.DataFrame({
+        'Feature': feature_names,
+        'MI_Score': mi_scores,
+        'Chi2_Score': chi_scores,
+        'F_Score': f_scores,
+        'ICA_Meta_Score': meta_score
+    }).sort_values(by='ICA_Meta_Score', ascending=False)
+
+    selected_features = feature_df.head(k)['Feature'].tolist()
+
+    print("✅ ICA fusion completed.")
+    print(f"Top {k} Selected Features: {selected_features}\n")
+
+    return selected_features, feature_df
+
+
+# =========================
+# HYBRID FEATURE SELECTION: FA
+# =========================
+def hybrid_feature_selection_fa(mi_scores, chi_scores, f_scores, feature_names, k):
+    print("Starting Factor Analysis (FA) feature fusion...")
+
+    scores = np.vstack([mi_scores, chi_scores, f_scores]).T
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    scaler = MinMaxScaler()
+    scores_scaled = scaler.fit_transform(scores)
+
+    fa = FactorAnalysis(n_components=1, random_state=42)
+    meta_score = fa.fit_transform(scores_scaled).ravel()
+
+    feature_df = pd.DataFrame({
+        'Feature': feature_names,
+        'MI_Score': mi_scores,
+        'Chi2_Score': chi_scores,
+        'F_Score': f_scores,
+        'Meta_Score': meta_score
+    }).sort_values(by='Meta_Score', ascending=False)
+
+    selected_features = feature_df.head(k)['Feature'].tolist()
+
+    print("✅ FA fusion completed.")
+    print(f"Top {k} Selected Features: {selected_features}")
+    print("\nFactor Loadings (Correlation with MI, Chi2, F):")
+    print(pd.Series(fa.components_[0], index=['MI', 'Chi2', 'F']), "\n")
+
+    return selected_features, feature_df
+
+
+# =========================
+# WRAPPER: FEATURE SELECTION
+# =========================
+def feature_selection(X_fin_capped, mi_scores, chi_scores, f_scores, k=20, method='pca'):
+    if method == 'pca':
+        selected_features, score_table = hybrid_feature_selection_pca(
+            mi_scores, chi_scores, f_scores,
+            feature_names=X_fin_capped.columns, k=k
+        )
+    elif method == 'ica':
+        selected_features, score_table = hybrid_feature_selection_ica(
+            mi_scores, chi_scores, f_scores,
+            feature_names=X_fin_capped.columns, k=k
+        )
+    elif method == 'fa':
+        selected_features, score_table = hybrid_feature_selection_fa(
+            mi_scores, chi_scores, f_scores,
+            feature_names=X_fin_capped.columns, k=k
+        )
+    else:
+        raise ValueError("Invalid method. Choose from 'pca', 'ica', or 'fa'.")
+
+    return selected_features, score_table
+
+
+# =========================
+# UNIVERSAL TRAINING PIPELINE FOR A SINGLE MODEL
+# =========================
+def run_single_model(model_name, X_fin_capped, y_encoded, feature_method,
+                     mi_scores, chi_scores, f_scores):
+
+    results = []
+    print(f"\n============== {model_name} TRAINING STARTED ({feature_method}) ==============")
+
+    process = psutil.Process(os.getpid())
+    best_test_f1 = -1
+    best_cm = None
+    best_k_for_cm = None
+
+    for k in range(5, RANGE_LIMIT + 1, 5):
+
+        print(f"\n===== Testing k = {k} ({model_name}, {feature_method}) =====")
+        k_start_time = time.time()
+
+        selected, value_table = feature_selection(
+            X_fin_capped=X_fin_capped,
+            mi_scores=mi_scores,
+            chi_scores=chi_scores,
+            f_scores=f_scores,
+            k=k,
+            method=feature_method
+        )
+
+        X_train, X_test, y_train, y_test = split_sub_data(
+            X_fin_capped=X_fin_capped,
+            y_encoded=y_encoded,
+            selected=selected,
+            test_size=SPLIT_SIZE,
+            random_state=RANDOM_STATE
+        )
+
+        # ---------------------------
+        # BUILD MODEL
+        # ---------------------------
+        if model_name == "LSTM":
+            model = Sequential()
+            model.add(LSTM(128, input_shape=(1, X_train.shape[1]), return_sequences=True))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(LSTM(64, return_sequences=True))
+            model.add(Dropout(0.3))
+            model.add(LSTM(64, return_sequences=False))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(Dense(64, activation='relu'))
+            model.add(Dropout(0.3))
+            model.add(Dense(32, activation='relu'))
+            model.add(Dense(1, activation='sigmoid'))
+
+            X_train_m = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))
+            X_test_m = X_test.values.reshape((X_test.shape[0], 1, X_test.shape[1]))
+
+        elif model_name == "ANN":
+            model = Sequential()
+            model.add(tf.keras.Input(shape=(X_train.shape[1],)))
+            model.add(Dense(128, activation='relu'))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(Dense(64, activation='relu'))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(Dense(32, activation='relu'))
+            model.add(Dropout(0.3))
+            model.add(Dense(1, activation='sigmoid'))
+            X_train_m, X_test_m = X_train, X_test
+
+        elif model_name == "GRU":
+            model = Sequential()
+            model.add(GRU(128, input_shape=(1, X_train.shape[1]), return_sequences=True))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(GRU(64, return_sequences=False))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.3))
+            model.add(Dense(64, activation='relu'))
+            model.add(Dropout(0.3))
+            model.add(Dense(32, activation='relu'))
+            model.add(Dense(1, activation='sigmoid'))
+            X_train_m = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))
+            X_test_m = X_test.values.reshape((X_test.shape[0], 1, X_test.shape[1]))
+
+        elif model_name == "CNN":
+            model = Sequential()
+            model.add(tf.keras.Input(shape=(X_train.shape[1], 1)))
+
+            model.add(Conv1D(filters=64, kernel_size=min(2, X_train.shape[1]),
+                             activation='relu', padding='same'))
+            model.add(BatchNormalization())
+            if X_train.shape[1] >= 4:
+                model.add(MaxPooling1D(pool_size=2))
+            model.add(Dropout(0.3))
+
+            model.add(Conv1D(filters=128, kernel_size=min(2, X_train.shape[1]),
+                             activation='relu', padding='same'))
+            model.add(BatchNormalization())
+            if X_train.shape[1] > 8:
+                model.add(MaxPooling1D(pool_size=2))
+            model.add(Dropout(0.3))
+
+            model.add(Flatten())
+            model.add(Dense(64, activation='relu'))
+            model.add(Dropout(0.3))
+            model.add(Dense(32, activation='relu'))
+            model.add(Dense(1, activation='sigmoid'))
+
+            X_train_m = X_train.values.reshape((X_train.shape[0], X_train.shape[1], 1))
+            X_test_m = X_test.values.reshape((X_test.shape[0], X_test.shape[1], 1))
+
+        else:
+            raise ValueError(f"Unknown model name: {model_name}")
+
+        # ---------------------------
+        # COMPILE & TRAIN
+        # ---------------------------
+        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+        tf.debugging.set_log_device_placement(True)
+        tf.config.set_soft_device_placement(True)
+
+        gpus_local = tf.config.list_physical_devices('GPU')
+        if gpus_local:
+            try:
+                for g in gpus_local:
+                    tf.config.experimental.set_memory_growth(g, True)
+            except RuntimeError as e:
+                print("Memory growth error:", e)
+
+        print("Training started...")
+        history = model.fit(
+            X_train_m, y_train,
+            validation_data=(X_test_m, y_test),
+            epochs=TRAING_EPOCHS,
+            batch_size=BATCH_SIZE,
+            verbose=1
+        )
+        print("Training done.")
+
+        # ---------------------------
+        # EVALUATION
+        # ---------------------------
+        train_loss, train_acc = model.evaluate(X_train_m, y_train, verbose=0)
+        test_loss, test_acc = model.evaluate(X_test_m, y_test, verbose=0)
+
+        y_train_pred = (model.predict(X_train_m) > 0.5).astype(int)
+        y_test_pred = (model.predict(X_test_m) > 0.5).astype(int)
+
+        train_f1 = f1_score(y_train, y_train_pred)
+        test_f1 = f1_score(y_test, y_test_pred)
+
+        k_time = time.time() - k_start_time
+        mem_gb = process.memory_info().rss / (1024 ** 3)
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+        gpu_mem_gb = get_gpu_memory_used_gb()
+
+        results.append({
+            "k": k,
+            "train_acc": train_acc,
+            "test_acc": test_acc,
+            "train_f1": train_f1,
+            "test_f1": test_f1,
+            "time_sec": k_time,
+            "mem_gb": mem_gb,
+            "cpu_percent": cpu_percent,
+            "gpu_mem_gb": gpu_mem_gb
+        })
+
+        print(f"Train Acc = {train_acc:.4f}, Test Acc = {test_acc:.4f}")
+        print(f"Train F1  = {train_f1:.4f}, Test F1  = {test_f1:.4f}")
+        print(f"Time for k={k}: {k_time:.2f} sec")
+        print(f"CPU: {cpu_percent:.1f}% | RAM: {mem_gb:.2f} GB | GPU VRAM: {gpu_mem_gb:.2f} GB")
+
+        if test_f1 > best_test_f1:
+            best_test_f1 = test_f1
+            best_cm = confusion_matrix(y_test, y_test_pred)
+            best_k_for_cm = k
+
+    results_df = pd.DataFrame(results)
+    best_row = results_df.loc[results_df['test_f1'].idxmax()]
+    print(f"\n{model_name} ({feature_method}) : 🏆 Best k = {best_row['k']} | Test F1 = {best_row['test_f1']:.4f}")
+
+    # ---------------------------
+    # PLOTS: F1 vs k
+    # ---------------------------
+    plt.figure()
+    plt.plot(results_df['k'], results_df['train_f1'], marker='o', label='Train F1')
+    plt.plot(results_df['k'], results_df['test_f1'], marker='o', label='Test F1')
+    plt.xlabel("Number of Features (k)")
+    plt.ylabel("F1 Score")
+    plt.title(f"{model_name} - {feature_method.upper()} - F1 vs k")
+    plt.legend()
+    plt.grid(True)
+    f1_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model_name}_F1_vs_k.png")
+    plt.savefig(f1_plot_path, bbox_inches='tight')
+    plt.close()
+
+    # ---------------------------
+    # PLOTS: Time vs k
+    # ---------------------------
+    plt.figure()
+    plt.plot(results_df['k'], results_df['time_sec'], marker='o')
+    plt.xlabel("Number of Features (k)")
+    plt.ylabel("Training Time per run (sec)")
+    plt.title(f"{model_name} - {feature_method.upper()} - Time vs k")
+    plt.grid(True)
+    time_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model_name}_Time_vs_k.png")
+    plt.savefig(time_plot_path, bbox_inches='tight')
+    plt.close()
+
+    # ---------------------------
+    # PLOTS: Confusion Matrix (best k)
+    # ---------------------------
+    if best_cm is not None:
+        plt.figure()
+        sns.heatmap(best_cm, annot=True, fmt='d', cmap='Blues')
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(f"{model_name} - {feature_method.upper()} - Confusion Matrix (k={best_k_for_cm})")
+        cm_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model_name}_Confusion_Matrix.png")
+        plt.savefig(cm_plot_path, bbox_inches='tight')
+        plt.close()
+
+    # Save raw CSV results
+    csv_path = os.path.join(OUTPUT_DIR, f"{feature_method}_{model_name}_results.csv")
+    results_df.to_csv(csv_path, index=False)
+
+    return results_df, best_row
+
+
+# =========================
+# RUN ALL MODELS FOR ONE FEATURE FUSION METHOD
+# =========================
+def run_all_models(X_fin_capped, y_encoded, mi_scores, chi_scores, f_scores,
+                   feature_method="pca", system_info=None):
+
+    fm_start_time = time.time()
+
+    print(f"\n########## RUNNING ALL MODELS WITH {feature_method.upper()} FEATURE FUSION ##########")
+
+    document = Document()
+    document.add_heading(f"{feature_method.upper()} FULL MODEL RESULTS", level=1)
+
+    # General config
+    document.add_paragraph(f"Dataset shape: {X_fin_capped.shape[0]} rows, {X_fin_capped.shape[1]} features")
+    document.add_paragraph(f"Train/Test split: {SPLIT_SIZE}, Random state: {RANDOM_STATE}")
+    document.add_paragraph(f"Epochs: {TRAING_EPOCHS}, Batch size: {BATCH_SIZE}")
+    document.add_paragraph(f"Feature fusion method: {feature_method.upper()}")
+
+    # System info
+    if system_info is not None:
+        document.add_paragraph(f"CPU: {system_info['cpu_model']}")
+        document.add_paragraph(f"Total RAM: {system_info['total_ram_gb']:.2f} GB")
+        document.add_paragraph(f"GPU: {system_info['gpu_name']}")
+
+    model_results_dict = {}
+
+    models = ["LSTM", "ANN", "GRU", "CNN"]
+
+    for model in models:
+        df, best = run_single_model(
+            model_name=model,
+            X_fin_capped=X_fin_capped,
+            y_encoded=y_encoded,
+            feature_method=feature_method,
+            mi_scores=mi_scores,
+            chi_scores=chi_scores,
+            f_scores=f_scores
+        )
+
+        model_results_dict[model] = df
+
+        document.add_heading(f"{model} Results", level=2)
+
+        # Full table with all columns (including time, mem, cpu, gpu)
+        table = document.add_table(rows=1, cols=len(df.columns))
+        table.style = 'Light List Accent 1'
+
+        hdr_cells = table.rows[0].cells
+        for i, col in enumerate(df.columns):
+            hdr_cells[i].text = str(col)
+
+        for _, row in df.iterrows():
+            row_cells = table.add_row().cells
+            for i, col in enumerate(df.columns):
+                row_cells[i].text = str(row[col])
+
+        document.add_paragraph(
+            f"\n🏆 Best k = {best['k']} | Test F1 = {best['test_f1']:.4f}"
+        )
+
+        # Add plots into DOCX if present
+        f1_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_F1_vs_k.png")
+        time_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_Time_vs_k.png")
+        cm_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_{model}_Confusion_Matrix.png")
+
+        if os.path.exists(f1_plot_path):
+            document.add_paragraph("F1 Score vs Number of Features:")
+            document.add_picture(f1_plot_path, width=Inches(5))
+
+        if os.path.exists(time_plot_path):
+            document.add_paragraph("Training Time vs Number of Features:")
+            document.add_picture(time_plot_path, width=Inches(5))
+
+        if os.path.exists(cm_plot_path):
+            document.add_paragraph("Confusion Matrix (Best k):")
+            document.add_picture(cm_plot_path, width=Inches(4))
+
+        document.add_page_break()
+
+    # Overall comparison: all models, same feature fusion
+    plt.figure()
+    for model, df in model_results_dict.items():
+        plt.plot(df['k'], df['test_f1'], marker='o', label=model)
+    plt.xlabel("Number of Features (k)")
+    plt.ylabel("Test F1 Score")
+    plt.title(f"Test F1 vs k for all models ({feature_method.upper()} fusion)")
+    plt.legend()
+    plt.grid(True)
+    overall_plot_path = os.path.join(PLOT_DIR, f"{feature_method}_ALL_MODELS_F1_vs_k.png")
+    plt.savefig(overall_plot_path, bbox_inches='tight')
+    plt.close()
+
+    if os.path.exists(overall_plot_path):
+        document.add_heading("Overall Model Comparison (Test F1 vs k)", level=2)
+        document.add_picture(overall_plot_path, width=Inches(5))
+
+    # Peak memory for this fusion (max over all models)
+    peak_mem = 0.0
+    for model, df in model_results_dict.items():
+        if 'mem_gb' in df.columns:
+            m = df['mem_gb'].max()
+            if m > peak_mem:
+                peak_mem = m
+
+    fm_end_time = time.time()
+    total_min = (fm_end_time - fm_start_time) / 60.0
+
+    document.add_paragraph(f"\nTotal time for {feature_method.upper()} fusion: {total_min:.2f} minutes")
+    document.add_paragraph(f"Peak memory usage during {feature_method.upper()} fusion: {peak_mem:.2f} GB")
+
+    filename = os.path.join(OUTPUT_DIR, f"ALL_MODEL_RESULTS_{feature_method.upper()}.docx")
+    document.save(filename)
+
+    print(f"\n📄 ALL MODEL RESULTS SAVED SUCCESSFULLY AS: {filename}")
+    print(f"⏱ Time for {feature_method.upper()} fusion: {total_min:.2f} minutes")
+    print(f"💾 Peak memory for {feature_method.upper()} fusion: {peak_mem:.2f} GB\n")
+
+    return total_min, peak_mem
+
+
+# =========================
+# MAIN
+# =========================
+if __name__ == "__main__":
+    print("Data path received:", data_path)
+    df = load_data_from_directory(data_path)
+
+    X_fin_capped, y_encoded = preprocess_data(df)
+
+    # System info
+    sys_info = get_system_info()
+    print("\n===== SYSTEM INFO =====")
+    print("CPU:", sys_info['cpu_model'])
+    print(f"Total RAM: {sys_info['total_ram_gb']:.2f} GB")
+    print("GPU:", sys_info['gpu_name'])
+    print("=======================\n")
+
+    # Use full data for scoring on HPC
+    print("HPC MODE: Using FULL dataset for MI / Chi² / F-score calculations.")
+    X_score, y_score = X_fin_capped, y_encoded
+
+    mi_scores, chi_scores, f_scores = calculate_Score(X_score, y_score)
+
+    fusion_list = ['pca', 'ica', 'fa']
+
+    fusion_times = {}
+    fusion_peak_mems = []
+    for method in fusion_list:
+        t_min, p_mem = run_all_models(
+            X_fin_capped, y_encoded,
+            mi_scores=mi_scores,
+            chi_scores=chi_scores,
+            f_scores=f_scores,
+            feature_method=method,
+            system_info=sys_info
+        )
+        fusion_times[method] = t_min
+        fusion_peak_mems.append(p_mem)
+
+    end_time = time.time()
+    total_minutes = (end_time - start_time) / 60.0
+    peak_mem_overall = max(fusion_peak_mems) if fusion_peak_mems else 0.0
+
+    print("\n===== GLOBAL EXECUTION SUMMARY =====")
+    for method in fusion_list:
+        if method in fusion_times:
+            print(f"{method.upper()} fusion time: {fusion_times[method]:.2f} minutes")
+    print(f"TOTAL EXECUTION TIME: {total_minutes:.2f} minutes")
+    print(f"GLOBAL PEAK MEMORY USAGE: {peak_mem_overall:.2f} GB")
+    print("CPU:", sys_info['cpu_model'])
+    print(f"Total RAM: {sys_info['total_ram_gb']:.2f} GB")
+    print("GPU:", sys_info['gpu_name'])
+    print("====================================\n")
+
+    print("✅ All processes completed successfully.")
