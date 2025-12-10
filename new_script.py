@@ -68,18 +68,54 @@ def load_data_from_directory(data_path):
 
 
 def preprocess_data(df):
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)
-    print(f"Data shape after dropping NaN and infinite values: {df.shape}")
+    print("🔍 Starting safe preprocessing...")
 
+    # Remove unnamed index columns
+    df = df.loc[:, ~df.columns.str.contains("unnamed", case=False)]
+
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
+    # ---- AUTO-DETECT TARGET COLUMN ----
+    possible_targets = ["target", "Label", "label", "class", "Class", 
+                        "attack_cat", "Attack", "Attack_cat"]
+
+    target_col = None
+    for col in df.columns:
+        if col.strip() in possible_targets:
+            target_col = col
+            break
+
+    if target_col is None:
+        raise KeyError(f"❌ ERROR: No target column found in dataset! Available columns: {df.columns.tolist()}")
+
+    # Normalize target column name
+    if target_col != "target":
+        df.rename(columns={target_col: "target"}, inplace=True)
+
+    # ---- Convert all object columns to numeric safely ----
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # ---- Replace infinite values ----
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # ---- Fill NaN using median (safer than dropna) ----
+    df.fillna(df.median(numeric_only=True), inplace=True)
+
+    print(f"✅ After cleaning: {df.shape}")
+
+    # ---- Split features & labels ----
     X_fin_capped = df.drop(columns=["target"])
     y_encoded = df["target"]
 
     print("Class distribution:")
     print(y_encoded.value_counts())
 
-    print('Preprocessing done.')
+    print("Preprocessing done.")
     return X_fin_capped, y_encoded
+
 
 
 def split_sub_data(X_fin_capped, y_encoded, selected, test_size=0.2, random_state=42):
