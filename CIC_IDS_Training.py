@@ -43,10 +43,10 @@ if len(sys.argv) < 2:
 FUSION_LIST = ['pca','ica','fa']
 MODEL_LIST = ['LSTM','ANN','GRU','CNN']
 RANDOM_STATE = 42
-TRAING_EPOCHS = 2
+TRAING_EPOCHS = 50
 BATCH_SIZE = 512
 SPLIT_SIZE = 0.2
-RANGE_LIMIT = 15  # Upper limit for k in feature selection SHOULD BE 65 IN FINAL RUN
+RANGE_LIMIT = 75  # Upper limit for k in feature selection SHOULD BE 65 IN FINAL RUN
 
 
 data_path = sys.argv[1]
