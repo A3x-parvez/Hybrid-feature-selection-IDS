@@ -612,15 +612,9 @@ if __name__ == "__main__":
 
     X_fin_capped, y_encoded = preprocess_data(df)
 
-    # >>> NEW: Sample for MI/Chi2/F to avoid KILLED
-    if X_fin_capped.shape[0] > MI_SAMPLE_SIZE:
-        print(f"Using a random sample of {MI_SAMPLE_SIZE} rows for feature scoring to avoid OOM.")
-        rng = np.random.RandomState(RANDOM_STATE)
-        idx = rng.choice(X_fin_capped.shape[0], MI_SAMPLE_SIZE, replace=False)
-        X_score = X_fin_capped.iloc[idx]
-        y_score = y_encoded.iloc[idx]
-    else:
-        X_score, y_score = X_fin_capped, y_encoded
+    # >>> HPC MODE — ALWAYS USE FULL DATA
+    print("HPC DETECTED: Using FULL dataset for MI / Chi² / F-score calculations.")
+    X_score, y_score = X_fin_capped, y_encoded
 
     mi_scores, chi_scores, f_scores = calculate_Score(X_score, y_score)
 
